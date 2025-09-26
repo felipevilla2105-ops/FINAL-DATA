@@ -5,6 +5,10 @@ import seaborn as sns
 import plotly.express as px
 import streamlit as st
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 url="https://github.com/felipevilla2105-ops/curso-talento-t/raw/refs/heads/main/carga_ficticia_111.csv"
 #leer el df separador ;     
