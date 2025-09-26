@@ -1,135 +1,193 @@
 import pandas as pd
-import streamlit as st
+import numpy as np  
+import matplotlib.pyplot as plt
+import seaborn as sns       
 import plotly.express as px
-from scipy.signal import find_peaks
-import plotly.graph_objects as go
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
+import streamlit as st
+from datetime import datetime, timedelta
 
-
-# --- 1. Cargar la base de datos ---
 url="https://github.com/felipevilla2105-ops/curso-talento-t/raw/refs/heads/main/carga_ficticia_111.csv"
-df = pd.read_csv(url)
-
-#mostrar las columnas disponibles
-print("Columnas disponibles en el DataFrame:")
-print(df.columns.tolist())
+#leer el df separador ;     
+df=pd.read_csv(url,sep=';')
 
 
+# --- Configuración de la página de Streamlit ---
+st.set_page_config(layout="wide", page_title="Análisis de Procesos Judiciales")
 
-# --- 1. Definición de la Función de Análisis (Lógica Central) ---
+st.image('IMG\IMAGEN .jpg', use_container_width=True)
 
-@st.cache_data
-def analizar_procesos(df: pd.DataFrame):
-    """Aplica las reglas de negocio al DataFrame y retorna un DataFrame con las alertas."""
-    
-    # Limpieza de columnas y definición de constantes
-    df.columns = df.columns.str.strip()
-    
-    COL_TIPO_NOTICIA = 'Tipo de Noticia'
-    COL_FECHA_HECHOS = 'Fecha de los Hechos'
-    COL_FECHA_DENUNCIA = 'Fecha de la denuncia'
-    COL_FECHA_ULT_ACTUACION = 'Fecha Última Actuación'
-    COL_ULT_ACTUACION = 'Última Actuación'
-    
-    # Conversión de Fechas a formato datetime (maneja errores en el formato)
-    df[COL_FECHA_HECHOS] = pd.to_datetime(df[COL_FECHA_HECHOS], errors='coerce')
-    df[COL_FECHA_DENUNCIA] = pd.to_datetime(df[COL_FECHA_DENUNCIA], errors='coerce')
-    df[COL_FECHA_ULT_ACTUACION] = pd.to_datetime(df[COL_FECHA_ULT_ACTUACION], errors='coerce')
 
-    # Fecha actual para comparaciones de antigüedad
+# Nombre del archivo cargado (debe estar en el mismo directorio o se debe proporcionar la ruta completa)
+# *Asegúrate de que este nombre coincida con tu archivo cargado*
+FILE_PATH = 'https://github.com/felipevilla2105-ops/curso-talento-t/raw/refs/heads/main/carga_ficticia_111.csv' 
+
+try:
+    # Cargar el archivo CSV
+    df = pd.read_csv(FILE_PATH)
+
+    # Convertir columnas de fechas a datetime
+    # Se utiliza 'errors="coerce"' para manejar posibles valores no válidos, convirtiéndolos a NaT (Not a Time)
+    df['Fecha de los Hechos'] = pd.to_datetime(df['Fecha de los Hechos'], errors='coerce')
+    df['Fecha de la denuncia'] = pd.to_datetime(df['Fecha de la denuncia'], errors='coerce')
+    df['Fecha Última Actuación'] = pd.to_datetime(df['Fecha Última Actuación'], errors='coerce')
+
+    # Fecha actual para comparación
     fecha_actual = datetime.now()
-    limite_dos_meses = fecha_actual - relativedelta(months=+2)
-    
-    def aplicar_reglas(row):
-        mensajes = []
+
+    # ======================================================================
+    # 1. CADUCIDAD DE LA QUERELLA
+    # ======================================================================
+    st.header("1. CADUCIDAD DE LA QUERELLA")
+    st.markdown("---")
+
+    # Filtrar solo los casos 'QUERELLABLE' (se usa .str.upper() y .str.strip() para robustez)
+    df_querellable = df[df['Tipo de Noticia'].str.upper().str.strip() == 'QUERELLA'].copy()
+
+    # Calcular la diferencia en días entre la fecha de la denuncia y la fecha de los hechos
+    df_querellable['Diferencia_Dias'] = (df_querellable['Fecha de la denuncia'] - df_querellable['Fecha de los Hechos']).dt.days
+
+    # Aplicar la lógica de caducidad (más de 180 días es aproximadamente 6 meses)
+    def check_caducidad(row):
+        # La querella debe presentarse DENTRO de los 6 meses (180 días) desde los hechos.
+        # Si la diferencia es > 180 (más de 6 meses), hay caducidad.
+        if pd.notna(row['Diferencia_Dias']) and row['Diferencia_Dias'] > 180:
+            return "❌ Caducidad de la querella"
+        elif pd.notna(row['Diferencia_Dias']):
+            return "✅ Querella vigente"
+        return "⚠️ Datos de fecha incompletos"
+
+    df_querellable['Análisis Caducidad'] = df_querellable.apply(check_caducidad, axis=1)
+
+    # Mostrar resultados en Streamlit
+    if not df_querellable.empty:
+        df_caducidad_display = df_querellable[
+             (df_querellable['Análisis Caducidad'] == "❌ Caducidad de la querella") |
+             (df_querellable['Análisis Caducidad'] == "⚠️ Datos de fecha incompletos")
+        ]
         
-        tipo_noticia = row[COL_TIPO_NOTICIA]
-        fecha_hechos = row[COL_FECHA_HECHOS]
-        fecha_denuncia = row[COL_FECHA_DENUNCIA]
-        fecha_ult_actuacion = row[COL_FECHA_ULT_ACTUACION]
-        ult_actuacion = row[COL_ULT_ACTUACION]
-        
-        # --- REGLA 1: Caducidad de la Querella (6 meses entre Hechos y Denuncia) ---
-        if tipo_noticia == 'QUERELLABLE' and pd.notna(fecha_hechos) and pd.notna(fecha_denuncia):
-            limite_caducidad = fecha_hechos + relativedelta(months=+6)
-            if fecha_denuncia > limite_caducidad:
-                mensajes.append("🔴 Caducidad de la querella")
-
-        # --- REGLA 2: Actuaciones de Conciliación ---
-        if pd.notna(ult_actuacion):
-            actuacion = str(ult_actuacion).strip().upper()
-            if 'CONCILIACION FRACASADA' in actuacion:
-                mensajes.append("➡️ Continuar con el proceso")
-            elif 'CONCILIACION CON ACUERDO' in actuacion:
-                mensajes.append("✅ Proceder con el archivo")
-                
-        # --- REGLA 3: Proceso sin nuevas actuaciones en los últimos 2 meses ---
-        if pd.notna(fecha_ult_actuacion) and fecha_ult_actuacion < limite_dos_meses:
-            # Solo aplicamos el mensaje de "Avanzar" si no hay una acción de archivo/continuar de conciliación previa
-            if not any(m in " ".join(mensajes) for m in ["Continuar con el proceso", "Proceder con el archivo"]):
-                 mensajes.append("🟡 Avanzar con el proceso")
-            
-        # --- REGLA 4: Solicitud de información al denunciante hace más de 2 meses ---
-        if pd.notna(ult_actuacion) and pd.notna(fecha_ult_actuacion):
-            actuacion = str(ult_actuacion).strip().upper()
-            if 'SOLICITUD A DENUNCIANTE DE INFORMACIÓN' in actuacion and fecha_ult_actuacion < limite_dos_meses:
-                mensajes.append("✅ Se puede proceder con el archivo del caso")
-
-        return ", ".join(mensajes) if mensajes else "🆗 Sin Alertas"
-
-    # Aplicar la función al DataFrame
-    df['Análisis Proceso'] = df.apply(aplicar_reglas, axis=1)
-    
-    # Filtramos y definimos las columnas de salida
-    df_alertas = df[df['Análisis Proceso'] != "🆗 Sin Alertas"].copy()
-    
-    columnas_salida = ['Caso Noticia', 'Artículo', COL_TIPO_NOTICIA, COL_FECHA_HECHOS, 
-                        COL_FECHA_DENUNCIA, COL_FECHA_ULT_ACTUACION, COL_ULT_ACTUACION, 
-                        'Análisis Proceso']
-                        
-    # Retornamos solo las columnas de interés que existan en el DataFrame
-    return df_alertas[[col for col in columnas_salida if col in df_alertas.columns]]
-
-# --- 2. Configuración y Lógica de Streamlit ---
-
-st.set_page_config(layout="wide")
-st.title("🤖 Analizador de Alertas Judiciales")
-st.markdown("Carga tu archivo CSV (`carga_ficticia_111.csv`) para ejecutar el análisis de querellas, conciliaciones y antigüedad de actuaciones.")
-
-# Widget de carga de archivo
-uploaded_file = st.file_uploader("Sube el archivo CSV", type="csv")
-
-if uploaded_file is not None:
-    try:
-        # Cargar datos desde el archivo subido
-        df_input = pd.read_csv(uploaded_file)
-        
-        # Ejecutar la lógica de análisis
-        df_alertas = analizar_procesos(df_input)
-        
-        # --- 3. Despliegue de Resultados ---
-        
-        if not df_alertas.empty:
-            st.success(f"✅ Análisis completado. Se encontraron **{len(df_alertas)}** procesos con alertas/acciones sugeridas.")
-            
-            st.subheader("🚨 Procesos que Requieren Acción o Revisión")
-            # Mostrar el DataFrame de alertas
-            st.dataframe(df_alertas, use_container_width=True)
-            
-            # Botón de Descarga
-            csv_output = df_alertas.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="⬇️ Descargar Alertas en CSV",
-                data=csv_output,
-                file_name='alertas_procesos_analizados.csv',
-                mime='text/csv',
+        if not df_caducidad_display.empty:
+            st.subheader("Casos con posible Caducidad:")
+            st.dataframe(
+                df_caducidad_display[['Caso Noticia', 'Tipo de Noticia', 'Fecha de los Hechos', 'Fecha de la denuncia', 'Diferencia_Dias', 'Análisis Caducidad']]
             )
-            
         else:
-            st.info("✅ Excelente: No se encontraron procesos que cumplan con las condiciones de alerta/acción.")
+            st.info("No hay casos querellables que presenten caducidad o fechas incompletas.")
+    else:
+        st.info("No se encontraron casos con 'Tipo de Noticia' = 'QUERELLA'.")
 
-    except Exception as e:
-        st.error(f"❌ Ocurrió un error durante el procesamiento. Por favor, verifica el formato de tu archivo: {e}")
+    # ---
+    
+    # ======================================================================
+    # 2. ÚLTIMAS ACTUACIONES (Inactividad General)
+    # ======================================================================
+    st.header("2. ÚLTIMAS ACTUACIONES")
+    st.markdown("---")
 
-# ---
+    # Definir el umbral de inactividad (2 meses = 60 días)
+    umbral_inactividad_dias = 60
+    fecha_limite = fecha_actual - timedelta(days=umbral_inactividad_dias)
+
+    # Casos cuya última actuación es anterior a la fecha límite de 2 meses
+    df['Análisis Inactividad'] = df.apply(
+        lambda row: "🚨 Avanzar con el proceso"
+        if pd.notna(row['Fecha Última Actuación']) and row['Fecha Última Actuación'] < fecha_limite
+        else "🟢 Actividad reciente",
+        axis=1
+    )
+
+    # Filtrar solo los casos que cumplen la condición de inactividad
+    df_avanzar = df[df['Análisis Inactividad'] == "🚨 Avanzar con el proceso"].copy()
+
+    # Mostrar resultados
+    if not df_avanzar.empty:
+        st.subheader(f"Procesos con Inactividad de más de {umbral_inactividad_dias} días (2 meses):")
+        st.dataframe(
+            df_avanzar[['Caso Noticia', 'Fecha Última Actuación', 'Última Actuación', 'Análisis Inactividad']]
+        )
+    else:
+        st.info("Todos los procesos tienen una 'Fecha Última Actuación' en los últimos 2 meses o la fecha está incompleta.")
+
+    # ---
+
+    # ======================================================================
+    # 3. CONCILIACIÓN FRACASADA / CON ACUERDO
+    # ======================================================================
+    st.header("3. CONCILIACIÓN: Estado del Proceso")
+    st.markdown("---")
+
+    # Convertir a mayúsculas y limpiar espacios para asegurar la coincidencia
+    df['Última Actuación Limpia'] = df['Última Actuación'].astype(str).str.upper().str.strip().fillna('')
+
+    # Aplicar la lógica de conciliación
+    def check_conciliacion(actuacion):
+        if 'CONCILIACIÓN FRACASADA' in actuacion:
+            return "➡️ Continuar con el proceso (Conciliación Fracasada)"
+        elif 'CONCILIACIÓN CON ACUERDO' in actuacion:
+            return "💾 Proceder con el archivo (Conciliación con Acuerdo)"
+        return "No aplica o estado diferente"
+
+    df['Análisis Conciliación'] = df['Última Actuación Limpia'].apply(check_conciliacion)
+
+    # Filtrar solo los casos relevantes
+    df_conciliacion = df[
+        (df['Análisis Conciliación'] == "➡️ Continuar con el proceso (Conciliación Fracasada)") |
+        (df['Análisis Conciliación'] == "💾 Proceder con el archivo (Conciliación con Acuerdo)")
+    ].copy()
+
+    # Mostrar resultados
+    if not df_conciliacion.empty:
+        st.subheader("Resultados Específicos de Conciliación:")
+        st.dataframe(
+            df_conciliacion[['Caso Noticia', 'Última Actuación', 'Análisis Conciliación']]
+        )
+    else:
+        st.info("No se encontraron casos con 'Conciliación Fracasada' o 'Conciliación con Acuerdo'.")
+
+    # ---
+
+    # ======================================================================
+    # 4. INACTIVIDAD DEL DENUNCIANTE
+    # ======================================================================
+    st.header("4. INACTIVIDAD DEL DENUNCIANTE")
+    st.markdown("---")
+
+    # Definir la actuación específica
+    actuacion_buscada = 'SOLICITUD A DENUNCIANTE DE INFORMACIÓN ADICIONAL' # Usamos una parte de la cadena para ser flexibles
+    umbral_denunciante_dias = 60 # 2 meses
+
+    # Filtrar casos con la actuación específica
+    df_denunciante = df[df['Última Actuación Limpia'].str.contains(actuacion_buscada.upper(), na=False)].copy()
+
+    # Calcular la diferencia en días desde la última actuación
+    df_denunciante['Días_Desde_Actuacion'] = (fecha_actual - df_denunciante['Fecha Última Actuación']).dt.days
+
+    # Aplicar la lógica de inactividad del denunciante
+    def check_inactividad_denunciante(row):
+        if pd.notna(row['Días_Desde_Actuacion']) and row['Días_Desde_Actuacion'] > umbral_denunciante_dias:
+            return "📂 Se puede proceder con el archivo del caso (Inactividad del denunciante)"
+        elif pd.notna(row['Días_Desde_Actuacion']):
+            return f"Pendiente (Han pasado {int(row['Días_Desde_Actuacion'])} días)"
+        return "⚠️ Fecha de actuación incompleta"
+
+    df_denunciante['Análisis Inactividad Denunciante'] = df_denunciante.apply(check_inactividad_denunciante, axis=1)
+
+    # Filtrar solo los casos listos para archivo o pendientes
+    df_archivo_denunciante = df_denunciante[
+        df_denunciante['Análisis Inactividad Denunciante'].str.contains("proceder con el archivo") |
+        df_denunciante['Análisis Inactividad Denunciante'].str.contains("Pendiente")
+    ].copy()
+
+    # Mostrar resultados
+    if not df_archivo_denunciante.empty:
+        st.subheader(f"Casos con '{actuacion_buscada}' para seguimiento:")
+        st.dataframe(
+            df_archivo_denunciante[['Caso Noticia', 'Fecha Última Actuación', 'Última Actuación', 'Días_Desde_Actuacion', 'Análisis Inactividad Denunciante']]
+        )
+    else:
+        st.info(f"No hay casos con la actuación '{actuacion_buscada}' o los datos están incompletos.")
+
+
+except FileNotFoundError:
+    st.error(f"¡Error! El archivo '{FILE_PATH}' no se encontró. Asegúrate de que está en el mismo directorio.")
+except Exception as e:
+    st.error(f"Ocurrió un error al procesar el archivo: {e}")
