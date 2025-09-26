@@ -18,7 +18,7 @@ df=pd.read_csv(url,sep=';')
 # --- Configuración de la página de Streamlit ---
 st.set_page_config(layout="wide", page_title="Análisis de Procesos Judiciales")
 
-#st.image('IMG\IMAGEN .jpg', use_container_width=True)
+st.image('IMG/fiscalia111.png', use_container_width=True)
 
 
 # Nombre del archivo cargado (debe estar en el mismo directorio o se debe proporcionar la ruta completa)
